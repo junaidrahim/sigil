@@ -57,8 +57,13 @@ class ClickHouseStorage(StorageBackend):
         logger.info("Appended %d rows to %s", len(chunk), self.table)
         return len(chunk)
 
-    def max_timestamp(self) -> Optional[datetime]:
-        result = self.client.query(f"SELECT max(timestamp) AS max_ts FROM {self.table}")
+    def max_timestamp(self, device: Optional[str] = None) -> Optional[datetime]:
+        query = f"SELECT max(timestamp) AS max_ts FROM {self.table}"
+        params = {}
+        if device:
+            query += " WHERE device = {device:String}"
+            params["device"] = device
+        result = self.client.query(query, parameters=params)
         row = result.first_row
         if not row or row[0] is None:
             return None

@@ -154,7 +154,7 @@ def push(device: Optional[str], full: bool) -> None:
 
     # Query high-water mark from storage
     storage = _get_storage(config.storage_backend)
-    watermark = None if full else storage.max_timestamp()
+    watermark = None if full else storage.max_timestamp(device=device)
 
     if watermark:
         console.print(f"[dim]Watermark:[/]  {watermark.isoformat()}")

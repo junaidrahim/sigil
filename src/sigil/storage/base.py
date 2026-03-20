@@ -56,15 +56,14 @@ class StorageBackend(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def max_timestamp(self) -> Optional[datetime]:
-        """Return the maximum ``timestamp`` value across all stored rows.
+    def max_timestamp(self, device: Optional[str] = None) -> Optional[datetime]:
+        """Return the maximum ``timestamp`` value across stored rows.
 
-        Used as a high-water mark for incremental pushes — only rows
-        with a timestamp strictly greater than this value will be
-        processed on the next push.
+        Args:
+            device: If provided, only consider rows from this device.
 
         Returns:
             The latest ``datetime`` found in storage, or ``None`` if
-            the store is empty.
+            the store is empty (or has no rows for the given device).
         """
         ...
