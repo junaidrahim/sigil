@@ -29,11 +29,13 @@ class TestIcebergSchemaGeneration:
 
     def test_optional_fields_are_not_required(self):
         schema = SessionRow.iceberg_schema()
-        timestamp = schema.find_field("timestamp")
-        assert not timestamp.required
-
         model = schema.find_field("model")
         assert not model.required
+
+    def test_timestamp_is_required(self):
+        schema = SessionRow.iceberg_schema()
+        timestamp = schema.find_field("timestamp")
+        assert timestamp.required
 
     def test_required_fields_are_required(self):
         schema = SessionRow.iceberg_schema()
@@ -61,19 +63,20 @@ class TestIcebergSchemaGeneration:
         ts_field = schema.find_field("timestamp")
         assert pf.source_id == ts_field.field_id
 
-    def test_to_iceberg_dict_serializes_extras(self):
+    def test_to_storage_dict_serializes_extras(self):
         row = SessionRow(
             row_id="r1",
             session_id="s1",
             session_system="claude_code",
             device="mac",
             pushed_at="2026-03-20T12:00:00",
+            timestamp="2026-03-20T12:00:00",
             entry_type="user",
             source_file="/tmp/test.jsonl",
             source_line=1,
             extras={"key": "value", "nested": {"a": 1}},
         )
-        d = row.to_iceberg_dict()
+        d = row.to_storage_dict()
         assert isinstance(d["extras"], str)
         assert '"key"' in d["extras"]
         assert '"nested"' in d["extras"]

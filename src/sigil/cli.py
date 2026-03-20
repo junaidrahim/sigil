@@ -21,7 +21,7 @@ def _get_storage(backend: str) -> StorageBackend:
     """Instantiate the configured storage backend.
 
     Args:
-        backend: Backend name (``"local"`` or ``"iceberg"``).
+        backend: Backend name (``"local"``, ``"iceberg"``, or ``"clickhouse"``).
 
     Returns:
         A ``StorageBackend`` instance ready to accept rows.
@@ -31,6 +31,11 @@ def _get_storage(backend: str) -> StorageBackend:
 
         config = load_config()
         return IcebergStorage(config.iceberg)
+    if backend == "clickhouse":
+        from sigil.storage.clickhouse import ClickHouseStorage
+
+        config = load_config()
+        return ClickHouseStorage(config.clickhouse)
     return LocalStorage()
 
 
@@ -81,15 +86,13 @@ def init() -> None:
 
     backend = Prompt.ask(
         "Storage backend",
-        choices=["local", "iceberg"],
+        choices=["local", "iceberg", "clickhouse"],
         default="local",
         console=console,
     )
 
-    catalog_name = ""
-    catalog_uri = ""
-    catalog_token = ""
-    warehouse = ""
+    # Build TOML content
+    lines = [f'storage_backend = "{backend}"']
 
     if backend == "iceberg":
         console.print("\n[bold]Iceberg catalog settings[/]\n")
@@ -97,10 +100,6 @@ def init() -> None:
         catalog_uri = Prompt.ask("Catalog URI", default="", console=console)
         catalog_token = Prompt.ask("Catalog token", default="", password=True, console=console)
         warehouse = Prompt.ask("Warehouse path", default="", console=console)
-
-    # Build TOML content
-    lines = [f'storage_backend = "{backend}"']
-    if backend == "iceberg":
         lines.append("")
         lines.append("[iceberg]")
         lines.append(f'catalog_name = "{catalog_name}"')
@@ -109,6 +108,20 @@ def init() -> None:
             lines.append(f'catalog_token = "{catalog_token}"')
         if warehouse:
             lines.append(f'warehouse = "{warehouse}"')
+
+    if backend == "clickhouse":
+        console.print("\n[bold]ClickHouse connection settings[/]\n")
+        ch_host = Prompt.ask("Host", default="localhost", console=console)
+        ch_database = Prompt.ask("Database", default="sigil", console=console)
+        ch_user = Prompt.ask("User", default="default", console=console)
+        ch_password = Prompt.ask("Password", default="", password=True, console=console)
+        lines.append("")
+        lines.append("[clickhouse]")
+        lines.append(f'host = "{ch_host}"')
+        lines.append(f'database = "{ch_database}"')
+        lines.append(f'user = "{ch_user}"')
+        if ch_password:
+            lines.append(f'password = "{ch_password}"')
 
     SIGIL_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text("\n".join(lines) + "\n")

@@ -1,21 +1,12 @@
 """Tests for Claude Code and Codex parsers."""
 
-import json
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
 
 from sigil.parsers.claude import ClaudeParser
 from sigil.parsers.codex import CodexParser
-
-
-def _write_jsonl(path: Path, entries: List[Dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        for entry in entries:
-            f.write(json.dumps(entry) + "\n")
-
+from tests.helpers import write_jsonl
 
 PUSHED_AT = datetime(2026, 3, 20, 12, 0, 0)
 
@@ -32,7 +23,7 @@ class TestClaudeParser:
     def test_user_message(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "session.jsonl"
-            _write_jsonl(
+            write_jsonl(
                 path,
                 [
                     {
@@ -63,7 +54,7 @@ class TestClaudeParser:
     def test_assistant_with_tool_use(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "session.jsonl"
-            _write_jsonl(
+            write_jsonl(
                 path,
                 [
                     {
@@ -116,7 +107,7 @@ class TestClaudeParser:
     def test_thinking_content_not_stored(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "session.jsonl"
-            _write_jsonl(
+            write_jsonl(
                 path,
                 [
                     {
@@ -144,7 +135,7 @@ class TestClaudeParser:
     def test_file_history_snapshot_skipped(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "session.jsonl"
-            _write_jsonl(
+            write_jsonl(
                 path,
                 [
                     {"type": "file-history-snapshot", "messageId": "m1", "snapshot": {}},
@@ -165,7 +156,7 @@ class TestClaudeParser:
     def test_extras_captures_unknown_keys(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "session.jsonl"
-            _write_jsonl(
+            write_jsonl(
                 path,
                 [
                     {
@@ -207,7 +198,7 @@ class TestClaudeParser:
     def test_tool_result_entry(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "session.jsonl"
-            _write_jsonl(
+            write_jsonl(
                 path,
                 [
                     {
@@ -243,7 +234,7 @@ class TestCodexParser:
     def test_session_meta(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "rollout.jsonl"
-            _write_jsonl(
+            write_jsonl(
                 path,
                 [
                     {
@@ -275,7 +266,7 @@ class TestCodexParser:
     def test_user_message(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "rollout.jsonl"
-            _write_jsonl(
+            write_jsonl(
                 path,
                 [
                     {
@@ -302,7 +293,7 @@ class TestCodexParser:
     def test_turn_context_sets_model(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "rollout.jsonl"
-            _write_jsonl(
+            write_jsonl(
                 path,
                 [
                     {
@@ -335,7 +326,7 @@ class TestCodexParser:
     def test_response_item_message(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "rollout.jsonl"
-            _write_jsonl(
+            write_jsonl(
                 path,
                 [
                     {
@@ -359,7 +350,7 @@ class TestCodexParser:
     def test_extras_captures_payload_overflow(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "rollout.jsonl"
-            _write_jsonl(
+            write_jsonl(
                 path,
                 [
                     {

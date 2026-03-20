@@ -5,10 +5,10 @@ Claude Code stores sessions at::
     ~/.claude/projects/<encoded-project-path>/<uuid>.jsonl
 """
 
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import orjson
-import xxhash
 
 from sigil.models import SessionRow
 from sigil.parsers.base import SessionParser
@@ -43,9 +43,17 @@ _KNOWN_KEYS: Set[str] = {
 class ClaudeParser(SessionParser):
     """Parses Claude Code JSONL entries into ``SessionRow`` instances.
 
-    Stateless — each entry is parsed independently. Claude Code timestamps
-    are in unix milliseconds or ISO 8601 strings.
+    Tracks the last seen timestamp so entries without a top-level
+    ``timestamp`` (e.g. ``file-history-snapshot``, ``last-prompt``)
+    can inherit one from the surrounding context.
+
+    Attributes:
+        _last_ts: The most recently seen timestamp, used as fallback.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._last_ts: Optional[datetime] = None
 
     def parse(self, d: Dict[str, Any]) -> Optional[SessionRow]:
         """Parse a single Claude Code JSONL entry.
@@ -55,19 +63,26 @@ class ClaudeParser(SessionParser):
                 and ``_source_line``.
 
         Returns:
-            A ``SessionRow``, or ``None`` for internal bookkeeping entries
-            (e.g. ``file-history-snapshot``).
+            A ``SessionRow``, or ``None`` if a timestamp cannot be
+            determined.
         """
         entry_type = d.get("type", "unknown")
 
-        if entry_type == "file-history-snapshot":
-            return None
-
-        source_file = d.get("_source_file", "")
-        source_line = d.get("_source_line", 0)
-        row_id = xxhash.xxh64(f"{source_file}:{source_line}".encode()).hexdigest()
-
         ts = parse_timestamp(d.get("timestamp"), unix_ms=True)
+
+        # Fallback timestamps for entries without a top-level timestamp
+        if ts is None and entry_type == "file-history-snapshot":
+            snapshot = d.get("snapshot", {})
+            if isinstance(snapshot, dict):
+                ts = parse_timestamp(snapshot.get("timestamp"))
+        if ts is None:
+            ts = self._last_ts
+
+        if ts is not None:
+            self._last_ts = ts
+        else:
+            # Cannot determine any timestamp — skip this entry
+            return None
         session_id = d.get("sessionId", "")
 
         message = d.get("message", {})
@@ -98,12 +113,10 @@ class ClaudeParser(SessionParser):
 
         extras: Dict[str, Any] = {k: v for k, v in d.items() if k not in _KNOWN_KEYS}
 
-        return SessionRow(
-            row_id=row_id,
+        return self._build_row(
+            d,
             session_id=session_id,
             session_system="claude_code",
-            device=self.device,
-            pushed_at=self.pushed_at,
             timestamp=ts,
             entry_type=entry_type,
             message_role=role,
@@ -124,8 +137,6 @@ class ClaudeParser(SessionParser):
             parent_uuid=d.get("parentUuid"),
             request_id=d.get("requestId"),
             stop_reason=stop_reason,
-            source_file=source_file,
-            source_line=source_line,
             extras=extras,
         )
 

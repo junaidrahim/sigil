@@ -8,7 +8,7 @@ Resolution order per field:
 
 import os
 import tomllib
-from typing import Any, Dict, Optional
+from typing import Any, ClassVar, Dict, Optional, Type
 
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -27,10 +27,42 @@ class IcebergConfig(BaseModel):
         warehouse: Warehouse location (e.g. an S3 path).
     """
 
+    _env_map: ClassVar[Dict[str, str]] = {
+        "catalog_name": "ICEBERG_CATALOG_NAME",
+        "catalog_uri": "ICEBERG_CATALOG_URI",
+        "catalog_token": "ICEBERG_CATALOG_TOKEN",
+        "warehouse": "ICEBERG_WAREHOUSE",
+    }
+
     catalog_name: str = "default"
     catalog_uri: str = ""
     catalog_token: str = ""
     warehouse: str = ""
+
+
+class ClickHouseConfig(BaseModel):
+    """ClickHouse connection settings.
+
+    Attributes:
+        host: ClickHouse server hostname.
+        port: ClickHouse native protocol port.
+        database: Target database name.
+        user: Authentication username.
+        password: Authentication password.
+        secure: Whether to use TLS for the connection.
+    """
+
+    _env_map: ClassVar[Dict[str, str]] = {
+        "host": "CLICKHOUSE_HOST",
+        "database": "CLICKHOUSE_DATABASE",
+        "user": "CLICKHOUSE_USER",
+        "password": "CLICKHOUSE_PASSWORD",
+    }
+
+    host: str = "localhost"
+    database: str = "sigil"
+    user: str = "default"
+    password: str = ""
 
 
 class Config(BaseModel):
@@ -38,11 +70,13 @@ class Config(BaseModel):
 
     Attributes:
         iceberg: Iceberg catalog connection settings.
-        storage_backend: Which storage backend to use (``"local"`` or
-            ``"iceberg"``).
+        clickhouse: ClickHouse connection settings.
+        storage_backend: Which storage backend to use (``"local"``,
+            ``"iceberg"``, or ``"clickhouse"``).
     """
 
     iceberg: IcebergConfig = IcebergConfig()
+    clickhouse: ClickHouseConfig = ClickHouseConfig()
     storage_backend: str = "local"
 
 
@@ -65,6 +99,16 @@ def _resolve(file_val: Optional[Any], env_key: str, default: str) -> str:
     return default
 
 
+def _resolve_model(model_cls: Type[BaseModel], file_data: Dict[str, Any]) -> BaseModel:
+    """Resolve all fields of a config model using file data, env vars, and defaults."""
+    kwargs: Dict[str, str] = {}
+    for field_name, info in model_cls.model_fields.items():
+        env_key = model_cls._env_map[field_name]  # type: ignore[attr-defined]
+        default = info.default if info.default is not None else ""
+        kwargs[field_name] = _resolve(file_data.get(field_name), env_key, str(default))
+    return model_cls(**kwargs)
+
+
 def load_config() -> Config:
     """Load configuration from ``~/.sigil/config.toml`` with env var fallbacks.
 
@@ -77,14 +121,8 @@ def load_config() -> Config:
         with open(CONFIG_PATH, "rb") as f:
             data = tomllib.load(f)
 
-    iceberg_data = data.get("iceberg", {})
-    iceberg = IcebergConfig(
-        catalog_name=_resolve(iceberg_data.get("catalog_name"), "ICEBERG_CATALOG_NAME", "default"),
-        catalog_uri=_resolve(iceberg_data.get("catalog_uri"), "ICEBERG_CATALOG_URI", ""),
-        catalog_token=_resolve(iceberg_data.get("catalog_token"), "ICEBERG_CATALOG_TOKEN", ""),
-        warehouse=_resolve(iceberg_data.get("warehouse"), "ICEBERG_WAREHOUSE", ""),
-    )
-
+    iceberg = _resolve_model(IcebergConfig, data.get("iceberg", {}))
+    clickhouse = _resolve_model(ClickHouseConfig, data.get("clickhouse", {}))
     storage_backend = _resolve(data.get("storage_backend"), "STORAGE_BACKEND", "local")
 
-    return Config(iceberg=iceberg, storage_backend=storage_backend)
+    return Config(iceberg=iceberg, clickhouse=clickhouse, storage_backend=storage_backend)

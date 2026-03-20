@@ -5,48 +5,15 @@ Production uses REST catalogs exclusively.
 """
 
 import tempfile
-from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 import daft
 import pyarrow as pa
 from pyiceberg.catalog import load_catalog
 
 from sigil.models import SessionRow
-
-
-def _make_row(
-    session_system: str = "claude_code",
-    session_id: str = "sess-1",
-    timestamp: Optional[datetime] = None,
-    tool_name: Optional[str] = None,
-    input_tokens: Optional[int] = 100,
-    output_tokens: Optional[int] = 200,
-    model: Optional[str] = "claude-opus-4-6",
-    **kwargs,
-) -> SessionRow:
-    ts = timestamp or datetime(2026, 3, 15, 10, 0, 0)
-    return SessionRow(
-        row_id=f"row-{id(ts)}",
-        session_id=session_id,
-        session_system=session_system,
-        device="test-mac",
-        pushed_at=datetime(2026, 3, 20, 12, 0, 0),
-        timestamp=ts,
-        entry_type="assistant",
-        message_role="assistant",
-        message_text="hello",
-        content_type="text",
-        tool_name=tool_name,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        model=model,
-        model_provider="anthropic",
-        source_file="/tmp/test.jsonl",
-        source_line=1,
-        **kwargs,
-    )
+from tests.helpers import make_row
 
 
 def _create_test_table(tmpdir: str):
@@ -70,7 +37,7 @@ def _create_test_table(tmpdir: str):
 
 def _append_via_daft(table, rows: List[SessionRow]) -> None:
     """Append rows to an Iceberg table using daft (mirrors IcebergStorage._flush)."""
-    records = [row.to_iceberg_dict() for row in rows]
+    records = [row.to_storage_dict() for row in rows]
     arrow_schema = table.scan().to_arrow_batch_reader().schema
     arrow_table = pa.Table.from_pylist(records, schema=arrow_schema)
     df = daft.from_arrow(arrow_table)
@@ -81,15 +48,15 @@ class TestIcebergAppend:
     def test_append(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             table = _create_test_table(tmpdir)
-            _append_via_daft(table, [_make_row(), _make_row(session_id="sess-2")])
+            _append_via_daft(table, [make_row(), make_row(session_id="sess-2")])
 
             assert table.scan().to_arrow().num_rows == 2
 
     def test_append_multiple_batches(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             table = _create_test_table(tmpdir)
-            _append_via_daft(table, [_make_row(session_id="s1")])
-            _append_via_daft(table, [_make_row(session_id="s2")])
+            _append_via_daft(table, [make_row(session_id="s1")])
+            _append_via_daft(table, [make_row(session_id="s2")])
 
             assert table.scan().to_arrow().num_rows == 2
 

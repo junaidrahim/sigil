@@ -1,19 +1,11 @@
 """Tests for push auto-detection and orchestration."""
 
-import json
 import tempfile
 from pathlib import Path
-from typing import Dict, List
 from unittest.mock import patch
 
 from sigil.push import auto_detect_sources, discover_session_files, push_all
-
-
-def _write_jsonl(path: Path, entries: List[Dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        for entry in entries:
-            f.write(json.dumps(entry) + "\n")
+from tests.helpers import write_jsonl
 
 
 class TestAutoDetect:
@@ -69,7 +61,7 @@ class TestPushAll:
         with tempfile.TemporaryDirectory() as tmpdir:
             # Claude session
             claude_dir = Path(tmpdir) / "claude"
-            _write_jsonl(
+            write_jsonl(
                 claude_dir / "proj" / "session.jsonl",
                 [
                     {
@@ -84,7 +76,7 @@ class TestPushAll:
 
             # Codex session
             codex_dir = Path(tmpdir) / "codex"
-            _write_jsonl(
+            write_jsonl(
                 codex_dir / "2026" / "03" / "01" / "rollout.jsonl",
                 [
                     {

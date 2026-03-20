@@ -36,6 +36,11 @@ def parse_timestamp(raw: Any, unix_ms: bool = False) -> Optional[datetime]:
     if raw is None:
         return None
 
+    if isinstance(raw, datetime):
+        if raw.tzinfo is None:
+            return raw.replace(tzinfo=UTC)
+        return raw.astimezone(UTC)
+
     if isinstance(raw, int | float):
         try:
             return datetime.fromtimestamp(raw / 1000 if unix_ms else raw, tz=UTC)

@@ -7,8 +7,6 @@ Codex stores sessions at::
 
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-import xxhash
-
 from sigil.models import SessionRow
 from sigil.parsers.base import SessionParser
 from sigil.timestamps import parse_timestamp
@@ -77,10 +75,6 @@ class CodexParser(SessionParser):
             A ``SessionRow`` instance. Unlike the Claude parser, Codex
             entries are never skipped.
         """
-        source_file = d.get("_source_file", "")
-        source_line = d.get("_source_line", 0)
-        row_id = xxhash.xxh64(f"{source_file}:{source_line}".encode()).hexdigest()
-
         entry_type = d.get("type", "unknown")
         payload = d.get("payload", {}) or {}
         ts = parse_timestamp(d.get("timestamp"))
@@ -106,12 +100,10 @@ class CodexParser(SessionParser):
         if payload_extras:
             extras["payload"] = payload_extras
 
-        return SessionRow(
-            row_id=row_id,
+        return self._build_row(
+            d,
             session_id=self._session_id,
             session_system="codex",
-            device=self.device,
-            pushed_at=self.pushed_at,
             timestamp=ts,
             entry_type=entry_type,
             message_role=role,
@@ -119,21 +111,10 @@ class CodexParser(SessionParser):
             content_type=content_type,
             tool_name=tool_name,
             tool_input=tool_input,
-            tool_result_text=None,
-            input_tokens=None,
-            output_tokens=None,
-            cache_creation_tokens=None,
-            cache_read_tokens=None,
             model=self._model,
             model_provider=self._model_provider,
             cwd=self._cwd,
-            git_branch=None,
             cli_version=self._cli_version,
-            parent_uuid=None,
-            request_id=None,
-            stop_reason=None,
-            source_file=source_file,
-            source_line=source_line,
             extras=extras,
         )
 

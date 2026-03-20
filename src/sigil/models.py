@@ -28,6 +28,25 @@ _PYDANTIC_TO_ICEBERG = {
     datetime: TimestamptzType(),
 }
 
+# Pydantic type annotation -> ClickHouse type
+_PYDANTIC_TO_CLICKHOUSE = {
+    str: "String",
+    int: "Int64",
+    datetime: "DateTime64(3, 'UTC')",
+}
+
+
+def _unwrap_optional(annotation: Any) -> Tuple[Any, bool]:
+    """Unwrap ``Optional[X]`` to ``(X, True)``, or return ``(annotation, False)``."""
+    args = getattr(annotation, "__args__", ())
+    if args and type(None) in args:
+        inner = [a for a in args if a is not type(None)][0]
+        return inner, True
+    origin = getattr(annotation, "__origin__", None)
+    if origin is type(None):  # noqa: E721
+        return annotation, True
+    return annotation, False
+
 
 class SessionRow(BaseModel):
     """One row per JSONL entry from a session log file.
@@ -74,7 +93,7 @@ class SessionRow(BaseModel):
     pushed_at: datetime = Field(description="When this row was pushed to sigil")
 
     # Timing
-    timestamp: Optional[datetime] = Field(default=None, description="Entry timestamp")
+    timestamp: datetime = Field(description="Entry timestamp from the source log")
 
     # Message
     entry_type: str = Field(
@@ -141,24 +160,8 @@ class SessionRow(BaseModel):
         """
         fields: List[NestedField] = []
         for field_id, (name, info) in enumerate(cls.model_fields.items(), start=1):
-            annotation = info.annotation
-
-            # Unwrap Optional[X] -> X
-            is_optional = False
-            origin = getattr(annotation, "__origin__", None)
-            if origin is type(None):  # noqa: E721
-                is_optional = True
-            args = getattr(annotation, "__args__", ())
-            if args and type(None) in args:
-                is_optional = True
-                inner = [a for a in args if a is not type(None)][0]
-                annotation = inner
-
-            # Map to Iceberg type
-            if annotation in _PYDANTIC_TO_ICEBERG:
-                iceberg_type = _PYDANTIC_TO_ICEBERG[annotation]
-            else:
-                iceberg_type = StringType()
+            annotation, is_optional = _unwrap_optional(info.annotation)
+            iceberg_type = _PYDANTIC_TO_ICEBERG.get(annotation, StringType())
 
             fields.append(
                 NestedField(
@@ -191,11 +194,11 @@ class SessionRow(BaseModel):
             )
         )
 
-    def to_iceberg_dict(self) -> Dict[str, Any]:
-        """Convert this row to a dict suitable for Iceberg/Arrow ingestion.
+    def to_storage_dict(self) -> Dict[str, Any]:
+        """Convert this row to a dict suitable for storage ingestion.
 
         The ``extras`` field is serialized from a Python dict to a JSON string,
-        since Iceberg stores it as a ``StringType`` column.
+        since storage backends store it as a string column.
 
         Returns:
             A flat dict with all fields, ``extras`` as a JSON string.
@@ -212,3 +215,45 @@ class SessionRow(BaseModel):
             A ``(namespace, table_name)`` tuple.
         """
         return ("sigil", "session_logs")
+
+    @classmethod
+    def clickhouse_columns(cls) -> List[Tuple[str, str]]:
+        """Return ``(column_name, clickhouse_type)`` pairs for all fields.
+
+        Derives column types from model field annotations using
+        ``_PYDANTIC_TO_CLICKHOUSE``. ``Optional`` fields are wrapped in
+        ``Nullable()``. Complex types fall back to ``String``.
+
+        Returns:
+            A list of ``(name, type_string)`` tuples.
+        """
+        columns: List[Tuple[str, str]] = []
+        for name, info in cls.model_fields.items():
+            annotation, is_optional = _unwrap_optional(info.annotation)
+            ch_type = _PYDANTIC_TO_CLICKHOUSE.get(annotation, "String")
+            if is_optional:
+                ch_type = f"Nullable({ch_type})"
+            columns.append((name, ch_type))
+        return columns
+
+    @classmethod
+    def clickhouse_ddl(cls, table: str) -> str:
+        """Generate a ClickHouse CREATE TABLE statement.
+
+        Uses ``MergeTree()`` engine ordered by
+        ``(session_system, timestamp, row_id)`` and partitioned by month.
+
+        Args:
+            table: Fully qualified table name (e.g. ``sigil.session_logs``).
+
+        Returns:
+            A complete ``CREATE TABLE IF NOT EXISTS`` DDL string.
+        """
+        col_defs = ", ".join(f"{name} {typ}" for name, typ in cls.clickhouse_columns())
+        return (
+            f"CREATE TABLE IF NOT EXISTS {table} "
+            f"({col_defs}) "
+            f"ENGINE = MergeTree() "
+            f"ORDER BY (session_system, timestamp, row_id) "
+            f"PARTITION BY toYYYYMM(timestamp)"
+        )

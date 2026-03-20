@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
 import orjson
+import xxhash
 
 from sigil.models import SessionRow
 
@@ -44,6 +45,29 @@ class SessionParser(abc.ABC):
         self.device = device
         self.pushed_at = pushed_at
         self.watermark = watermark
+
+    @staticmethod
+    def make_row_id(source_file: str, source_line: int) -> str:
+        """Generate a deterministic row ID from source file and line number."""
+        return xxhash.xxh64(f"{source_file}:{source_line}".encode()).hexdigest()
+
+    def _build_row(self, d: Dict[str, Any], **kwargs: Any) -> SessionRow:
+        """Build a ``SessionRow`` with common fields filled from the entry dict.
+
+        Handles ``row_id``, ``device``, ``pushed_at``, ``source_file``,
+        ``source_line``, and ``extras``. Callers pass remaining fields
+        via ``**kwargs``.
+        """
+        source_file = d.get("_source_file", "")
+        source_line = d.get("_source_line", 0)
+        return SessionRow(
+            row_id=self.make_row_id(source_file, source_line),
+            device=self.device,
+            pushed_at=self.pushed_at,
+            source_file=source_file,
+            source_line=source_line,
+            **kwargs,
+        )
 
     @abc.abstractmethod
     def parse(self, d: Dict[str, Any]) -> Optional[SessionRow]:
@@ -94,7 +118,7 @@ class SessionParser(abc.ABC):
                         continue
 
                     # Apply watermark filter
-                    if self.watermark and row.timestamp and row.timestamp <= self.watermark:
+                    if self.watermark and row.timestamp <= self.watermark:
                         continue
 
                     yield row
