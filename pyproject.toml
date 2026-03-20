@@ -1,5 +1,5 @@
 [project]
-name = "sigil"
+name = "sigil-ai"
 version = "1.0.0"
 description = "Collect, store, and analyze AI usage data across modalities"
 readme = "README.md"
