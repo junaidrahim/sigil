@@ -5,25 +5,23 @@ Collect, store, and analyze your AI usage data from Claude Code and OpenAI Codex
 ## Install
 
 ```bash
-uv tool install .
+pip install sigil-ai
 ```
 
 ## Quick Start
 
 ```bash
+# See all available commands
+uvx --from sigil-ai sigil --help
+
 # Interactive config setup
-sigil init
+uvx --from sigil-ai sigil init
 
 # Push session data (auto-detects ~/.claude/projects/ and ~/.codex/sessions/)
-sigil push
+uvx --from sigil-ai sigil push
 
 # Incremental push is the default — use --full to re-push everything
-sigil push --full
-
-# Analyze usage
-sigil analyze --period 30d
-sigil analyze --format json
-sigil analyze --format markdown
+uvx --from sigil-ai sigil push --full
 ```
 
 ## Storage Backends
@@ -63,5 +61,3 @@ uv run pytest              # Run tests
 uv run ruff check src/     # Lint
 uv run sigil --help        # CLI help
 ```
-
-See `sigil --help` for full options.
