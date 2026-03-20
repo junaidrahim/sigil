@@ -1,19 +1,61 @@
 """CLI entrypoint for sigil."""
 
-from __future__ import annotations
-
 import platform
-from pathlib import Path
+from typing import Dict, Iterator, Optional
 
 import click
 from rich.console import Console
+from rich.prompt import Confirm, Prompt
 
-from sigil.analyze import compute_metrics, format_as_json, format_as_markdown, format_as_prompt
-from sigil.config import load_config, load_device_config, save_device_config
-from sigil.push import build_snapshot
+from sigil.config import load_config
+from sigil.constants import CONFIG_PATH, SIGIL_DIR
+from sigil.models import SessionRow
+from sigil.push import auto_detect_sources, push_all
+from sigil.storage.base import StorageBackend
 from sigil.storage.local import LocalStorage
 
 console = Console(stderr=True)
+
+
+def _get_storage(backend: str) -> StorageBackend:
+    """Instantiate the configured storage backend.
+
+    Args:
+        backend: Backend name (``"local"`` or ``"iceberg"``).
+
+    Returns:
+        A ``StorageBackend`` instance ready to accept rows.
+    """
+    if backend == "iceberg":
+        from sigil.storage.iceberg import IcebergStorage
+
+        config = load_config()
+        return IcebergStorage(config.iceberg)
+    return LocalStorage()
+
+
+class _CountingIterator:
+    """Wraps an iterator to count rows by system as they flow through.
+
+    Attributes:
+        counts: Dict mapping ``session_system`` to row count, populated
+            as rows are yielded.
+    """
+
+    def __init__(self, rows: Iterator[SessionRow]) -> None:
+        """Initialise the counting wrapper.
+
+        Args:
+            rows: Source iterator of ``SessionRow`` instances.
+        """
+        self._rows = rows
+        self.counts: Dict[str, int] = {}
+
+    def __iter__(self) -> Iterator[SessionRow]:
+        """Yield rows while updating per-system counts."""
+        for row in self._rows:
+            self.counts[row.session_system] = self.counts.get(row.session_system, 0) + 1
+            yield row
 
 
 @click.group()
@@ -23,102 +65,96 @@ def cli() -> None:
 
 
 @cli.command()
-@click.option(
-    "--source",
-    type=click.Choice(["work", "personal", "openclaw"]),
-    help="Which AI modality this data is from.",
-)
-@click.option("--device", default=None, help="Device name (defaults to hostname).")
-@click.option(
-    "--path",
-    "sessions_path",
-    type=click.Path(exists=True, path_type=Path),
-    default=None,
-    help="Path to Claude Code session files.",
-)
-def push(source: str | None, device: str | None, sessions_path: Path | None) -> None:
-    """Push Claude Code session data from this device."""
-    config = load_config()
-    device_config = load_device_config()
-
-    # Resolve device name
-    if not device:
-        device = device_config.get("device", platform.node())
-
-    # Resolve source — require on first push, remember after
-    if not source:
-        source = device_config.get("source")
-    if not source:
-        console.print(
-            "[bold red]Error:[/] --source is required on first push from this device.\n"
-            "Use --source work|personal|openclaw"
+def init() -> None:
+    """Interactively create ~/.sigil/config.toml."""
+    if CONFIG_PATH.exists():
+        overwrite = Confirm.ask(
+            f"[yellow]{CONFIG_PATH} already exists.[/] Overwrite?",
+            default=False,
+            console=console,
         )
-        raise SystemExit(1)
+        if not overwrite:
+            console.print("[dim]Aborted.[/]")
+            return
 
-    # Resolve sessions path
-    if not sessions_path:
-        sessions_path = Path.home() / ".claude" / "projects"
+    console.print("[bold]Sigil configuration[/]\n")
 
-    if not sessions_path.exists():
-        console.print(f"[bold red]Error:[/] Sessions path not found: {sessions_path}")
-        raise SystemExit(1)
-
-    console.print(f"[dim]Source:[/]  {source}")
-    console.print(f"[dim]Device:[/]  {device}")
-    console.print(f"[dim]Path:[/]    {sessions_path}")
-    console.print()
-
-    # Build and save snapshot
-    snapshot = build_snapshot(sessions_path, source, device, config.sanitize)
-
-    if not snapshot.sessions:
-        console.print("[yellow]No sessions found to push.[/]")
-        return
-
-    storage = LocalStorage()
-    snapshot_id = storage.save_snapshot(snapshot)
-
-    # Remember source and device for next time
-    save_device_config({"source": source, "device": device})
-
-    console.print(
-        f"[bold green]Pushed {snapshot.session_count} sessions[/] "
-        f"(snapshot: {snapshot_id[:8]}...)"
+    backend = Prompt.ask(
+        "Storage backend",
+        choices=["local", "iceberg"],
+        default="local",
+        console=console,
     )
+
+    catalog_name = ""
+    catalog_uri = ""
+    catalog_token = ""
+    warehouse = ""
+
+    if backend == "iceberg":
+        console.print("\n[bold]Iceberg catalog settings[/]\n")
+        catalog_name = Prompt.ask("Catalog name", default="default", console=console)
+        catalog_uri = Prompt.ask("Catalog URI", default="", console=console)
+        catalog_token = Prompt.ask("Catalog token", default="", password=True, console=console)
+        warehouse = Prompt.ask("Warehouse path", default="", console=console)
+
+    # Build TOML content
+    lines = [f'storage_backend = "{backend}"']
+    if backend == "iceberg":
+        lines.append("")
+        lines.append("[iceberg]")
+        lines.append(f'catalog_name = "{catalog_name}"')
+        lines.append(f'catalog_uri = "{catalog_uri}"')
+        if catalog_token:
+            lines.append(f'catalog_token = "{catalog_token}"')
+        if warehouse:
+            lines.append(f'warehouse = "{warehouse}"')
+
+    SIGIL_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text("\n".join(lines) + "\n")
+
+    console.print(f"\n[bold green]Wrote {CONFIG_PATH}[/]")
 
 
 @cli.command()
-@click.option(
-    "--period",
-    default="30d",
-    help="Time period to analyze (e.g. 7d, 30d, 90d).",
-)
-@click.option(
-    "--source",
-    type=click.Choice(["work", "personal", "openclaw", "all"]),
-    default="all",
-    help="Filter by source modality.",
-)
-@click.option(
-    "--format",
-    "output_format",
-    type=click.Choice(["prompt", "json", "markdown"]),
-    default="prompt",
-    help="Output format.",
-)
-def analyze(period: str, source: str, output_format: str) -> None:
-    """Generate usage analysis from stored snapshots."""
-    storage = LocalStorage()
-    src = source if source != "all" else None
-    metrics = compute_metrics(storage, period=period, source=src)
+@click.option("--device", default=None, help="Device name (defaults to hostname).")
+@click.option("--full", is_flag=True, help="Ignore watermark and push all data.")
+def push(device: Optional[str], full: bool) -> None:
+    """Auto-detect and push all session logs from this device.
 
-    if metrics.total_sessions == 0:
-        console.print("[yellow]No sessions found for the specified period.[/]")
+    By default, only rows newer than the latest timestamp in storage
+    are pushed (incremental). Use ``--full`` to re-push everything.
+    """
+    config = load_config()
+
+    if not device:
+        device = platform.node()
+
+    sources = auto_detect_sources()
+    if not sources:
+        console.print("[yellow]No session log directories found.[/]")
+        console.print("[dim]Looked for: ~/.claude/projects/, ~/.codex/sessions/[/]")
         return
 
-    if output_format == "json":
-        click.echo(format_as_json(metrics))
-    elif output_format == "markdown":
-        click.echo(format_as_markdown(metrics))
-    else:
-        click.echo(format_as_prompt(metrics))
+    for system, path in sources:
+        console.print(f"[dim]Found:[/]  {system} -> {path}")
+
+    # Query high-water mark from storage
+    storage = _get_storage(config.storage_backend)
+    watermark = None if full else storage.max_timestamp()
+
+    if watermark:
+        console.print(f"[dim]Watermark:[/]  {watermark.isoformat()}")
+
+    # Stream rows through counting wrapper into storage
+    counted = _CountingIterator(push_all(device, sources=sources, watermark=watermark))
+    saved = storage.append(counted)
+
+    if saved == 0:
+        console.print("[yellow]No new session entries to push.[/]")
+        return
+
+    console.print()
+    for system, count in sorted(counted.counts.items()):
+        console.print(f"  {system}: {count:,} rows")
+    console.print(f"\n[bold green]Pushed {saved:,} rows[/]")

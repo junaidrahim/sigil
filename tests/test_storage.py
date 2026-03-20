@@ -1,104 +1,86 @@
 """Tests for the local storage backend."""
 
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
-from sigil.models import Message, Session, Snapshot, ToolUse
+from sigil.models import SessionRow
 from sigil.storage.local import LocalStorage
 
 
-def _make_snapshot(
-    source: str = "personal",
-    device: str = "test-machine",
-    pushed_at: str | None = None,
-    n_sessions: int = 1,
-) -> Snapshot:
-    sessions = []
-    for i in range(n_sessions):
-        sessions.append(
-            Session(
-                session_id=f"sess-{i}",
-                source=source,
-                device=device,
-                started_at="2026-03-01T10:00:00",
-                ended_at="2026-03-01T11:00:00",
-                messages=[Message(role="user", text="hello")],
-                tool_uses=[ToolUse(tool_name="Read", count=3)],
-                input_tokens=100,
-                output_tokens=200,
-                total_tokens=300,
-            )
-        )
-    snap = Snapshot(
-        source=source,
-        device=device,
-        sessions=sessions,
+def _make_row(
+    session_system: str = "claude_code",
+    session_id: str = "sess-1",
+    timestamp: Optional[datetime] = None,
+    tool_name: Optional[str] = None,
+    input_tokens: Optional[int] = 100,
+    output_tokens: Optional[int] = 200,
+    model: Optional[str] = "claude-opus-4-6",
+    **kwargs,
+) -> SessionRow:
+    """Create a test ``SessionRow`` with sensible defaults."""
+    ts = timestamp or datetime(2026, 3, 15, 10, 0, 0)
+    return SessionRow(
+        row_id=f"row-{id(ts)}",
+        session_id=session_id,
+        session_system=session_system,
+        device="test-mac",
+        pushed_at=datetime(2026, 3, 20, 12, 0, 0),
+        timestamp=ts,
+        entry_type="assistant",
+        message_role="assistant",
+        message_text="hello",
+        content_type="text",
+        tool_name=tool_name,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        model=model,
+        model_provider="anthropic",
+        source_file="/tmp/test.jsonl",
+        source_line=1,
+        **kwargs,
     )
-    if pushed_at:
-        snap.pushed_at = pushed_at
-    return snap
+
+
+def _count_parquet_files(base: Path) -> int:
+    """Count .parquet files recursively under a directory."""
+    return len(list(base.rglob("*.parquet")))
 
 
 class TestLocalStorage:
-    def test_save_and_retrieve(self):
+    def test_append_writes_parquet(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = LocalStorage(base_dir=Path(tmpdir))
-            snap = _make_snapshot()
-            sid = storage.save_snapshot(snap)
+            rows = [_make_row(), _make_row(session_id="sess-2")]
+            saved = storage.append(iter(rows))
 
-            loaded = storage.get_snapshot(sid)
-            assert loaded is not None
-            assert loaded.snapshot_id == snap.snapshot_id
-            assert loaded.session_count == 1
-            assert loaded.sessions[0].session_id == "sess-0"
-            assert loaded.sessions[0].messages[0].text == "hello"
-            assert loaded.sessions[0].tool_uses[0].tool_name == "Read"
+            assert saved == 2
+            assert _count_parquet_files(Path(tmpdir)) >= 1
 
-    def test_list_all(self):
+    def test_append_empty(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = LocalStorage(base_dir=Path(tmpdir))
-            storage.save_snapshot(_make_snapshot(source="work"))
-            storage.save_snapshot(_make_snapshot(source="personal"))
+            assert storage.append(iter([])) == 0
 
-            all_snaps = storage.list_snapshots()
-            assert len(all_snaps) == 2
-
-    def test_list_filter_by_source(self):
+    def test_append_from_generator(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = LocalStorage(base_dir=Path(tmpdir))
-            storage.save_snapshot(_make_snapshot(source="work"))
-            storage.save_snapshot(_make_snapshot(source="personal"))
 
-            work = storage.list_snapshots(source="work")
-            assert len(work) == 1
-            assert work[0].source == "work"
+            def gen():
+                yield _make_row(session_id="s1")
+                yield _make_row(session_id="s2")
+                yield _make_row(session_id="s3")
 
-    def test_list_filter_by_time(self):
+            saved = storage.append(gen())
+            assert saved == 3
+
+    def test_append_chunked(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = LocalStorage(base_dir=Path(tmpdir))
-            old = _make_snapshot(pushed_at="2025-01-01T00:00:00")
-            new = _make_snapshot(pushed_at="2026-03-15T00:00:00")
-            storage.save_snapshot(old)
-            storage.save_snapshot(new)
+            rows = [_make_row(session_id=f"s{i}") for i in range(5)]
+            saved = storage.append(iter(rows), chunk_size=2)
 
-            recent = storage.list_snapshots(since=datetime(2026, 1, 1))
-            assert len(recent) == 1
-
-    def test_get_nonexistent(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            storage = LocalStorage(base_dir=Path(tmpdir))
-            assert storage.get_snapshot("nonexistent") is None
-
-    def test_roundtrip_preserves_tokens(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            storage = LocalStorage(base_dir=Path(tmpdir))
-            snap = _make_snapshot(n_sessions=3)
-            storage.save_snapshot(snap)
-
-            loaded = storage.get_snapshot(snap.snapshot_id)
-            assert loaded is not None
-            for i, session in enumerate(loaded.sessions):
-                assert session.input_tokens == 100
-                assert session.output_tokens == 200
-                assert session.total_tokens == 300
+            assert saved == 5
+            # 5 rows with chunk_size=2 -> 3 flushes (2+2+1)
+            assert _count_parquet_files(Path(tmpdir)) >= 3

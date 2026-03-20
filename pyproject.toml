@@ -6,8 +6,24 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "click>=8.1",
+    "orjson>=3.10",
+    "pydantic>=2.12.5",
+    "pyiceberg[pyiceberg-core]>=0.9.0",
+    "pyarrow>=17.0",
+    "daft>=0.5",
     "rich>=13.0",
-    "tomli>=2.0; python_version < '3.11'",
+    "xxhash>=3.6.0",
+    "python-dateutil>=2.9.0.post0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.11",
+    "pre-commit>=4.0",
+    "poethepoet>=0.34",
+    "pyiceberg[sql-sqlite]>=0.9.0",
 ]
 
 [project.scripts]
@@ -23,3 +39,37 @@ packages = ["src/sigil"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "N",    # pep8-naming
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "UP006",  # use dict instead of Dict (we prefer typing imports)
+    "UP007",  # use X | Y for union types (we prefer typing.Optional)
+    "UP035",  # typing.Dict is deprecated (we prefer typing imports)
+    "UP045",  # use X | None (we prefer typing.Optional)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sigil"]
+
+[tool.poe.tasks]
+lint = "ruff check src/ tests/"
+format = "ruff format src/ tests/"
+check = "ruff check --fix src/ tests/"
+test = "pytest -v"
+all = ["format", "lint", "test"]

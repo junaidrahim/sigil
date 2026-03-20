@@ -1,60 +1,214 @@
-"""Data models for sigil."""
+"""Pydantic models for sigil.
 
-from __future__ import annotations
+``SessionRow`` is the canonical row schema for the Iceberg table. Every field
+from Claude Code and Codex logs maps into a named column where possible.
+Anything that doesn't fit goes into ``extras`` (serialized as a JSON string
+in Iceberg).
+"""
 
-import uuid
-from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
+
+import orjson
+from pydantic import BaseModel, Field
+from pyiceberg.partitioning import PartitionField, PartitionSpec
+from pyiceberg.schema import Schema
+from pyiceberg.transforms import DayTransform
+from pyiceberg.types import (
+    IntegerType,
+    NestedField,
+    StringType,
+    TimestamptzType,
+)
+
+# Pydantic type annotation -> Iceberg type
+_PYDANTIC_TO_ICEBERG = {
+    str: StringType(),
+    int: IntegerType(),
+    datetime: TimestamptzType(),
+}
 
 
-@dataclass
-class Message:
-    """A single message in a conversation."""
+class SessionRow(BaseModel):
+    """One row per JSONL entry from a session log file.
 
-    role: str
-    text: str
-    timestamp: str | None = None
-    token_count: int | None = None
+    This model serves as both the application-level data structure and the
+    source of truth for the Iceberg table schema (via ``iceberg_schema()``).
 
+    Attributes:
+        row_id: Deterministic xxhash of source file path + line number.
+        session_id: Session UUID/ULID from the source system.
+        session_system: Source system identifier (``claude_code`` or ``codex``).
+        device: Machine hostname that produced this row.
+        pushed_at: Timestamp of when this row was pushed to sigil.
+        timestamp: Entry timestamp from the source log.
+        entry_type: Entry type (``user``, ``assistant``, ``tool_result``, etc.).
+        message_role: Message role (``user`` or ``assistant``).
+        message_text: Text content of the message.
+        content_type: Content block type (``text``, ``tool_use``, ``thinking``, etc.).
+        tool_name: Tool name if this entry is a tool_use.
+        tool_input: Stringified JSON of tool input parameters.
+        tool_result_text: Stringified tool result content.
+        input_tokens: Number of input tokens consumed.
+        output_tokens: Number of output tokens produced.
+        cache_creation_tokens: Tokens used for cache creation.
+        cache_read_tokens: Tokens read from cache.
+        model: Model identifier string.
+        model_provider: Provider name (``anthropic`` or ``openai``).
+        cwd: Working directory at time of entry.
+        git_branch: Git branch at time of entry.
+        cli_version: CLI version string.
+        parent_uuid: Parent message UUID for conversation threading.
+        request_id: API request ID.
+        stop_reason: Reason the model stopped generating.
+        source_file: Path to the original JSONL file.
+        source_line: Line number in the source file (1-indexed).
+        extras: Overflow dict for keys that don't map to a named column.
+    """
 
-@dataclass
-class ToolUse:
-    """A record of a tool being used in a session."""
+    # Identity
+    row_id: str = Field(description="Deterministic hash of source file path + line number")
+    session_id: str = Field(description="Session UUID/ULID from the source system")
+    session_system: str = Field(description="Source system: claude_code or codex")
+    device: str = Field(description="Machine hostname")
+    pushed_at: datetime = Field(description="When this row was pushed to sigil")
 
-    tool_name: str
-    count: int = 1
+    # Timing
+    timestamp: Optional[datetime] = Field(default=None, description="Entry timestamp")
 
+    # Message
+    entry_type: str = Field(
+        description="Entry type: user, assistant, tool_result, event, session_meta, etc."
+    )
+    message_role: Optional[str] = Field(default=None, description="Message role: user or assistant")
+    message_text: Optional[str] = Field(default=None, description="Text content")
+    content_type: Optional[str] = Field(
+        default=None,
+        description="Content block type: text, tool_use, thinking, reasoning, etc.",
+    )
 
-@dataclass
-class Session:
-    """A parsed and sanitized Claude Code session."""
+    # Tool usage
+    tool_name: Optional[str] = Field(
+        default=None, description="Tool name if this entry is a tool_use"
+    )
+    tool_input: Optional[str] = Field(default=None, description="Stringified tool input JSON")
+    tool_result_text: Optional[str] = Field(
+        default=None, description="Stringified tool result content"
+    )
 
-    session_id: str
-    source: str  # work, personal, openclaw
-    device: str
-    started_at: str | None = None
-    ended_at: str | None = None
-    messages: list[Message] = field(default_factory=list)
-    tool_uses: list[ToolUse] = field(default_factory=list)
-    input_tokens: int = 0
-    output_tokens: int = 0
-    total_tokens: int = 0
-    project_path: str | None = None  # sanitized
-    model: str | None = None
-    raw_metadata: dict[str, Any] = field(default_factory=dict)
+    # Tokens
+    input_tokens: Optional[int] = Field(default=None)
+    output_tokens: Optional[int] = Field(default=None)
+    cache_creation_tokens: Optional[int] = Field(default=None)
+    cache_read_tokens: Optional[int] = Field(default=None)
 
+    # Model
+    model: Optional[str] = Field(default=None, description="Model identifier")
+    model_provider: Optional[str] = Field(default=None, description="Provider: anthropic or openai")
 
-@dataclass
-class Snapshot:
-    """A push snapshot containing sessions and metadata."""
+    # Context
+    cwd: Optional[str] = Field(default=None, description="Working directory")
+    git_branch: Optional[str] = Field(default=None)
+    cli_version: Optional[str] = Field(default=None, description="CLI version string")
 
-    snapshot_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    pushed_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    source: str = ""
-    device: str = ""
-    session_count: int = 0
-    sessions: list[Session] = field(default_factory=list)
+    # Session-level metadata
+    parent_uuid: Optional[str] = Field(
+        default=None, description="Parent message UUID for threading"
+    )
+    request_id: Optional[str] = Field(default=None, description="API request ID")
+    stop_reason: Optional[str] = Field(default=None)
 
-    def __post_init__(self) -> None:
-        self.session_count = len(self.sessions)
+    # Source file info
+    source_file: str = Field(description="Path to the original JSONL file")
+    source_line: int = Field(description="Line number in the source file (1-indexed)")
+
+    # Overflow — everything else (stored as JSON string in Iceberg)
+    extras: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="All keys from the raw entry that don't map to a named column",
+    )
+
+    @classmethod
+    def iceberg_schema(cls) -> Schema:
+        """Generate an Iceberg ``Schema`` from this model's field definitions.
+
+        Iterates over all Pydantic model fields, unwraps ``Optional`` types,
+        and maps Python types to Iceberg types using ``_PYDANTIC_TO_ICEBERG``.
+        Complex types (``Dict``, ``Any``) fall back to ``StringType``.
+
+        Returns:
+            A ``pyiceberg.schema.Schema`` with one ``NestedField`` per model field.
+        """
+        fields: List[NestedField] = []
+        for field_id, (name, info) in enumerate(cls.model_fields.items(), start=1):
+            annotation = info.annotation
+
+            # Unwrap Optional[X] -> X
+            is_optional = False
+            origin = getattr(annotation, "__origin__", None)
+            if origin is type(None):  # noqa: E721
+                is_optional = True
+            args = getattr(annotation, "__args__", ())
+            if args and type(None) in args:
+                is_optional = True
+                inner = [a for a in args if a is not type(None)][0]
+                annotation = inner
+
+            # Map to Iceberg type
+            if annotation in _PYDANTIC_TO_ICEBERG:
+                iceberg_type = _PYDANTIC_TO_ICEBERG[annotation]
+            else:
+                iceberg_type = StringType()
+
+            fields.append(
+                NestedField(
+                    field_id=field_id,
+                    name=name,
+                    field_type=iceberg_type,
+                    required=not is_optional,
+                )
+            )
+        return Schema(*fields)
+
+    @classmethod
+    def partition_spec(cls, timestamp_field: str = "timestamp") -> PartitionSpec:
+        """Generate a day-based partition spec on a timestamp field.
+
+        Args:
+            timestamp_field: Name of the field to partition by.
+
+        Returns:
+            A ``PartitionSpec`` with a single ``DayTransform`` field.
+        """
+        schema = cls.iceberg_schema()
+        source_field = schema.find_field(timestamp_field)
+        return PartitionSpec(
+            PartitionField(
+                source_id=source_field.field_id,
+                field_id=1000,
+                transform=DayTransform(),
+                name=f"{timestamp_field}_day",
+            )
+        )
+
+    def to_iceberg_dict(self) -> Dict[str, Any]:
+        """Convert this row to a dict suitable for Iceberg/Arrow ingestion.
+
+        The ``extras`` field is serialized from a Python dict to a JSON string,
+        since Iceberg stores it as a ``StringType`` column.
+
+        Returns:
+            A flat dict with all fields, ``extras`` as a JSON string.
+        """
+        d = self.model_dump()
+        d["extras"] = orjson.dumps(d["extras"]).decode()
+        return d
+
+    @classmethod
+    def iceberg_table_id(cls) -> Tuple[str, str]:
+        """Return the default Iceberg table identifier.
+
+        Returns:
+            A ``(namespace, table_name)`` tuple.
+        """
+        return ("sigil", "session_logs")

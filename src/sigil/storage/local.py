@@ -1,98 +1,98 @@
-"""Local JSON file storage backend."""
+"""Local parquet file storage backend."""
 
-from __future__ import annotations
-
-import dataclasses
-import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Dict, Iterable, List, Optional
 
-from sigil.config import SIGIL_DIR
-from sigil.models import Message, Session, Snapshot, ToolUse
+import daft
+
+from sigil.constants import DEFAULT_CHUNK_SIZE, ROWS_DIR
+from sigil.models import SessionRow
 from sigil.storage.base import StorageBackend
+from sigil.timestamps import parse_timestamp
 
 logger = logging.getLogger(__name__)
 
-SNAPSHOTS_DIR = SIGIL_DIR / "snapshots"
-
 
 class LocalStorage(StorageBackend):
-    """Stores snapshots as individual JSON files in ~/.sigil/snapshots/."""
+    """Stores rows as parquet files in ``~/.sigil/rows/``.
 
-    def __init__(self, base_dir: Path | None = None) -> None:
-        self.base_dir = base_dir or SNAPSHOTS_DIR
+    Each chunk is flushed as a separate parquet file via daft. Intended
+    for local development and testing.
+
+    Attributes:
+        base_dir: Root directory where parquet files are written.
+    """
+
+    def __init__(self, base_dir: Optional[Path] = None) -> None:
+        """Initialise the local storage backend.
+
+        Args:
+            base_dir: Directory for parquet output. Defaults to
+                ``~/.sigil/rows/``.
+        """
+        self.base_dir = base_dir or ROWS_DIR
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    def save_snapshot(self, snapshot: Snapshot) -> str:
-        path = self.base_dir / f"{snapshot.snapshot_id}.json"
-        data = dataclasses.asdict(snapshot)
-        path.write_text(json.dumps(data, indent=2, default=str))
-        return snapshot.snapshot_id
+    def append(self, rows: Iterable[SessionRow], chunk_size: int = DEFAULT_CHUNK_SIZE) -> int:
+        """Append rows to local parquet storage in chunks.
 
-    def list_snapshots(
-        self,
-        source: str | None = None,
-        since: datetime | None = None,
-        until: datetime | None = None,
-    ) -> list[Snapshot]:
-        snapshots: list[Snapshot] = []
-        for path in sorted(self.base_dir.glob("*.json")):
-            snap = self._load_file(path)
-            if snap is None:
-                continue
-            if source and snap.source != source:
-                continue
-            try:
-                pushed = datetime.fromisoformat(snap.pushed_at)
-            except (ValueError, TypeError):
-                continue
-            if since and pushed < since:
-                continue
-            if until and pushed > until:
-                continue
-            snapshots.append(snap)
-        return snapshots
+        Args:
+            rows: An iterable (or generator) of ``SessionRow`` instances.
+            chunk_size: Number of rows to accumulate before writing a
+                parquet file.
 
-    def get_snapshot(self, snapshot_id: str) -> Snapshot | None:
-        path = self.base_dir / f"{snapshot_id}.json"
-        if not path.exists():
+        Returns:
+            Total number of rows written across all chunks.
+        """
+        total = 0
+        chunk: List[Dict] = []
+
+        for row in rows:
+            chunk.append(row.model_dump(mode="json"))
+            if len(chunk) >= chunk_size:
+                total += self._flush(chunk)
+                chunk = []
+
+        if chunk:
+            total += self._flush(chunk)
+
+        return total
+
+    def max_timestamp(self) -> Optional[datetime]:
+        """Return the maximum ``timestamp`` from stored parquet files.
+
+        Returns:
+            The latest ``datetime`` found, or ``None`` if no data exists
+            or all timestamps are null.
+        """
+        parquet_files = list(self.base_dir.rglob("*.parquet"))
+        if not parquet_files:
             return None
-        return self._load_file(path)
 
-    def _load_file(self, path: Path) -> Snapshot | None:
-        try:
-            data = json.loads(path.read_text())
-            sessions = []
-            for s in data.get("sessions", []):
-                messages = [Message(**m) for m in s.get("messages", [])]
-                tool_uses = [ToolUse(**t) for t in s.get("tool_uses", [])]
-                sessions.append(
-                    Session(
-                        session_id=s["session_id"],
-                        source=s["source"],
-                        device=s["device"],
-                        started_at=s.get("started_at"),
-                        ended_at=s.get("ended_at"),
-                        messages=messages,
-                        tool_uses=tool_uses,
-                        input_tokens=s.get("input_tokens", 0),
-                        output_tokens=s.get("output_tokens", 0),
-                        total_tokens=s.get("total_tokens", 0),
-                        project_path=s.get("project_path"),
-                        model=s.get("model"),
-                        raw_metadata=s.get("raw_metadata", {}),
-                    )
-                )
-            snap = Snapshot(
-                snapshot_id=data["snapshot_id"],
-                pushed_at=data["pushed_at"],
-                source=data.get("source", ""),
-                device=data.get("device", ""),
-                session_count=data.get("session_count", 0),
-                sessions=sessions,
-            )
-            return snap
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            logger.warning("Failed to load snapshot %s: %s", path, e)
+        df = daft.read_parquet(str(self.base_dir))
+        result = (
+            df.where(daft.col("timestamp").not_null())
+            .agg(daft.col("timestamp").max().alias("max_ts"))
+            .collect()
+        )
+
+        raw = result.to_pydict()["max_ts"][0]
+        if raw is None:
             return None
+
+        return parse_timestamp(raw)
+
+    def _flush(self, records: List[Dict]) -> int:
+        """Write a batch of records to parquet.
+
+        Args:
+            records: List of dicts (JSON-serializable row data).
+
+        Returns:
+            Number of records written.
+        """
+        df = daft.from_pylist(records)
+        df.write_parquet(root_dir=str(self.base_dir), write_mode="append")
+        return len(records)

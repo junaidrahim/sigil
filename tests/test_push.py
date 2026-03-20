@@ -1,182 +1,112 @@
-"""Tests for push/session parsing."""
+"""Tests for push auto-detection and orchestration."""
 
 import json
 import tempfile
 from pathlib import Path
+from typing import Dict, List
+from unittest.mock import patch
 
-from sigil.config import SanitizeConfig
-from sigil.push import build_snapshot, discover_session_files, parse_session_file
+from sigil.push import auto_detect_sources, discover_session_files, push_all
 
 
-def _write_jsonl(path: Path, entries: list[dict]) -> None:
+def _write_jsonl(path: Path, entries: List[Dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         for entry in entries:
             f.write(json.dumps(entry) + "\n")
 
 
+class TestAutoDetect:
+    def test_detects_existing_dirs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir) / ".claude" / "projects"
+            codex_dir = Path(tmpdir) / ".codex" / "sessions"
+            claude_dir.mkdir(parents=True)
+            codex_dir.mkdir(parents=True)
+
+            with (
+                patch("sigil.push.CLAUDE_SESSIONS_DIR", claude_dir),
+                patch("sigil.push.CODEX_SESSIONS_DIR", codex_dir),
+            ):
+                sources = auto_detect_sources()
+
+            assert len(sources) == 2
+            systems = {s[0] for s in sources}
+            assert "claude_code" in systems
+            assert "codex" in systems
+
+    def test_missing_dirs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch("sigil.push.CLAUDE_SESSIONS_DIR", Path(tmpdir) / "nope1"),
+                patch("sigil.push.CODEX_SESSIONS_DIR", Path(tmpdir) / "nope2"),
+            ):
+                sources = auto_detect_sources()
+
+            assert sources == []
+
+
 class TestDiscoverSessionFiles:
-    def test_finds_jsonl_files(self):
+    def test_finds_jsonl(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
-            (base / "project1").mkdir()
-            (base / "project1" / "session.jsonl").touch()
-            (base / "project2").mkdir()
-            (base / "project2" / "session.jsonl").touch()
+            (base / "proj1").mkdir()
+            (base / "proj1" / "session.jsonl").touch()
+            (base / "proj2").mkdir()
+            (base / "proj2" / "session.jsonl").touch()
             (base / "readme.md").touch()
 
             files = discover_session_files(base)
             assert len(files) == 2
-            assert all(f.suffix == ".jsonl" for f in files)
 
     def test_empty_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             assert discover_session_files(Path(tmpdir)) == []
 
 
-class TestParseSessionFile:
-    def test_basic_parsing(self):
+class TestPushAll:
+    def test_parses_both_systems(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "session.jsonl"
-            entries = [
-                {
-                    "role": "user",
-                    "content": "Hello world",
-                    "timestamp": "2026-03-01T10:00:00Z",
-                    "usage": {"input_tokens": 10, "output_tokens": 0},
-                },
-                {
-                    "role": "assistant",
-                    "content": "Hi there!",
-                    "timestamp": "2026-03-01T10:00:05Z",
-                    "usage": {"input_tokens": 0, "output_tokens": 20},
-                    "model": "claude-sonnet-4-6",
-                },
-            ]
-            _write_jsonl(path, entries)
-
-            config = SanitizeConfig()
-            session = parse_session_file(path, "personal", "test-mac", config)
-
-            assert session is not None
-            assert session.source == "personal"
-            assert session.device == "test-mac"
-            assert session.input_tokens == 10
-            assert session.output_tokens == 20
-            assert session.total_tokens == 30
-            assert session.model == "claude-sonnet-4-6"
-            assert len(session.messages) == 2
-
-    def test_sanitization_applied(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "session.jsonl"
-            entries = [
-                {
-                    "role": "user",
-                    "content": "Check /Users/junaid/work/secret/file.py with key sk-abc123",
-                    "timestamp": "2026-03-01T10:00:00Z",
-                },
-            ]
-            _write_jsonl(path, entries)
-
-            config = SanitizeConfig(
-                strip_paths=["/Users/junaid/work/"],
-                redact_patterns=[r"sk-[a-zA-Z0-9]+"],
-                strip_code_blocks=True,
-            )
-            session = parse_session_file(path, "work", "test-mac", config)
-
-            assert session is not None
-            assert "secret" not in session.messages[0].text
-            assert "sk-abc123" not in session.messages[0].text
-
-    def test_tool_use_extraction(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "session.jsonl"
-            entries = [
-                {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "text", "text": "Let me read that."},
-                        {"type": "tool_use", "name": "Read", "input": {}},
-                    ],
-                    "timestamp": "2026-03-01T10:00:00Z",
-                },
-                {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "tool_use", "name": "Read", "input": {}},
-                        {"type": "tool_use", "name": "Edit", "input": {}},
-                    ],
-                    "timestamp": "2026-03-01T10:00:10Z",
-                },
-            ]
-            _write_jsonl(path, entries)
-
-            config = SanitizeConfig()
-            session = parse_session_file(path, "personal", "test-mac", config)
-
-            assert session is not None
-            tool_map = {t.tool_name: t.count for t in session.tool_uses}
-            assert tool_map["Read"] == 2
-            assert tool_map["Edit"] == 1
-
-    def test_empty_file_returns_none(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "session.jsonl"
-            path.write_text("")
-
-            config = SanitizeConfig()
-            assert parse_session_file(path, "personal", "test", config) is None
-
-    def test_malformed_json_skipped(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "session.jsonl"
-            path.write_text(
-                'not json\n{"role":"user","content":"valid","timestamp":"2026-03-01T10:00:00Z"}\n'
-            )
-
-            config = SanitizeConfig()
-            session = parse_session_file(path, "personal", "test", config)
-            assert session is not None
-            assert len(session.messages) == 1
-
-    def test_project_path_sanitized(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "session.jsonl"
-            entries = [
-                {
-                    "role": "user",
-                    "content": "hi",
-                    "cwd": "/Users/junaid/work/secret-project",
-                    "timestamp": "2026-03-01T10:00:00Z",
-                },
-            ]
-            _write_jsonl(path, entries)
-
-            config = SanitizeConfig(strip_paths=["/Users/junaid/work/"])
-            session = parse_session_file(path, "work", "test", config)
-            assert session is not None
-            assert session.project_path == "[path redacted]"
-
-
-class TestBuildSnapshot:
-    def test_builds_from_directory(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base = Path(tmpdir)
+            # Claude session
+            claude_dir = Path(tmpdir) / "claude"
             _write_jsonl(
-                base / "proj1" / "session.jsonl",
-                [{"role": "user", "content": "hi", "timestamp": "2026-03-01T10:00:00Z"}],
+                claude_dir / "proj" / "session.jsonl",
+                [
+                    {
+                        "type": "user",
+                        "message": {"role": "user", "content": "hello"},
+                        "uuid": "u1",
+                        "timestamp": "2026-03-01T10:00:00Z",
+                        "sessionId": "cs1",
+                    }
+                ],
             )
+
+            # Codex session
+            codex_dir = Path(tmpdir) / "codex"
             _write_jsonl(
-                base / "proj2" / "session.jsonl",
-                [{"role": "user", "content": "bye", "timestamp": "2026-03-02T10:00:00Z"}],
+                codex_dir / "2026" / "03" / "01" / "rollout.jsonl",
+                [
+                    {
+                        "timestamp": "2026-03-01T10:00:00Z",
+                        "type": "session_meta",
+                        "payload": {"id": "xs1", "cwd": "/tmp"},
+                    },
+                    {
+                        "timestamp": "2026-03-01T10:01:00Z",
+                        "type": "event_msg",
+                        "payload": {"type": "user_message", "message": "hi"},
+                    },
+                ],
             )
 
-            config = SanitizeConfig()
-            snapshot = build_snapshot(base, "personal", "test-mac", config)
+            sources = [("claude_code", claude_dir), ("codex", codex_dir)]
+            rows = list(push_all("test-mac", sources=sources))
 
-            assert snapshot.source == "personal"
-            assert snapshot.device == "test-mac"
-            assert snapshot.session_count == 2
-            assert len(snapshot.sessions) == 2
+            claude_rows = [r for r in rows if r.session_system == "claude_code"]
+            codex_rows = [r for r in rows if r.session_system == "codex"]
+
+            assert len(claude_rows) == 1
+            assert len(codex_rows) == 2
+            assert claude_rows[0].session_id == "cs1"
+            assert codex_rows[0].session_id == "xs1"

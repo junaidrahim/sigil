@@ -1,32 +1,45 @@
 """Abstract storage backend interface."""
 
-from __future__ import annotations
-
 import abc
 from datetime import datetime
+from typing import Iterable, Optional
 
-from sigil.models import Snapshot
+from sigil.constants import DEFAULT_CHUNK_SIZE
+from sigil.models import SessionRow
 
 
 class StorageBackend(abc.ABC):
-    """Interface for snapshot storage backends."""
+    """Abstract base class for session row storage backends.
+
+    Implementations must handle chunked iteration internally — callers
+    pass an iterable (including generators) and the backend accumulates
+    and flushes in chunks.
+    """
 
     @abc.abstractmethod
-    def save_snapshot(self, snapshot: Snapshot) -> str:
-        """Save a snapshot. Returns the snapshot ID."""
+    def append(self, rows: Iterable[SessionRow], chunk_size: int = DEFAULT_CHUNK_SIZE) -> int:
+        """Append rows to storage in chunks.
+
+        Args:
+            rows: An iterable (or generator) of ``SessionRow`` instances.
+            chunk_size: Number of rows to accumulate before flushing a
+                batch to the underlying storage.
+
+        Returns:
+            Total number of rows written across all chunks.
+        """
         ...
 
     @abc.abstractmethod
-    def list_snapshots(
-        self,
-        source: str | None = None,
-        since: datetime | None = None,
-        until: datetime | None = None,
-    ) -> list[Snapshot]:
-        """List snapshots, optionally filtered by source and time range."""
-        ...
+    def max_timestamp(self) -> Optional[datetime]:
+        """Return the maximum ``timestamp`` value across all stored rows.
 
-    @abc.abstractmethod
-    def get_snapshot(self, snapshot_id: str) -> Snapshot | None:
-        """Retrieve a single snapshot by ID."""
+        Used as a high-water mark for incremental pushes — only rows
+        with a timestamp strictly greater than this value will be
+        processed on the next push.
+
+        Returns:
+            The latest ``datetime`` found in storage, or ``None`` if
+            the store is empty.
+        """
         ...
