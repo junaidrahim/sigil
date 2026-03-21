@@ -152,15 +152,20 @@ def push(device: Optional[str], full: bool) -> None:
     for system, path in sources:
         console.print(f"[dim]Found:[/]  {system} -> {path}")
 
-    # Query high-water mark from storage
+    # Query per-parser high-water marks from storage
     storage = _get_storage(config.storage_backend)
-    watermark = None if full else storage.max_timestamp(device=device)
-
-    if watermark:
-        console.print(f"[dim]Watermark:[/]  {watermark.isoformat()}")
+    watermarks = {}
+    if not full:
+        for system, _ in sources:
+            wm = storage.max_timestamp(device=device, session_system=system)
+            if wm:
+                watermarks[system] = wm
+                console.print(f"[dim]Watermark ({system}):[/]  {wm.isoformat()}")
 
     # Stream rows through counting wrapper into storage
-    counted = _CountingIterator(push_all(device, sources=sources, watermark=watermark))
+    counted = _CountingIterator(
+        push_all(device, sources=sources, watermarks=watermarks if watermarks else None)
+    )
     saved = storage.append(counted)
 
     if saved == 0:

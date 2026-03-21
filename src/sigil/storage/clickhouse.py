@@ -57,12 +57,22 @@ class ClickHouseStorage(StorageBackend):
         logger.info("Appended %d rows to %s", len(chunk), self.table)
         return len(chunk)
 
-    def max_timestamp(self, device: Optional[str] = None) -> Optional[datetime]:
+    def max_timestamp(
+        self,
+        device: Optional[str] = None,
+        session_system: Optional[str] = None,
+    ) -> Optional[datetime]:
         query = f"SELECT max(timestamp) AS max_ts FROM {self.table}"
+        conditions = []
         params = {}
         if device:
-            query += " WHERE device = {device:String}"
+            conditions.append("device = {device:String}")
             params["device"] = device
+        if session_system:
+            conditions.append("session_system = {session_system:String}")
+            params["session_system"] = session_system
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         result = self.client.query(query, parameters=params)
         row = result.first_row
         if not row or row[0] is None:

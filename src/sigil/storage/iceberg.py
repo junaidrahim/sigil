@@ -88,10 +88,16 @@ class IcebergStorage(StorageBackend):
                 time.sleep(wait)
         return 0  # unreachable, satisfies type checker
 
-    def max_timestamp(self, device: Optional[str] = None) -> Optional[datetime]:
+    def max_timestamp(
+        self,
+        device: Optional[str] = None,
+        session_system: Optional[str] = None,
+    ) -> Optional[datetime]:
         df = daft.read_iceberg(self.table)
         if device:
             df = df.where(daft.col("device") == device)
+        if session_system:
+            df = df.where(daft.col("session_system") == session_system)
         result = df.agg(daft.col("timestamp").max().alias("max_ts")).collect()
 
         raw = result.to_pydict()["max_ts"][0]

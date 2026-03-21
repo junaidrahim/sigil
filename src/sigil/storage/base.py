@@ -56,14 +56,23 @@ class StorageBackend(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def max_timestamp(self, device: Optional[str] = None) -> Optional[datetime]:
+    def max_timestamp(
+        self,
+        device: Optional[str] = None,
+        session_system: Optional[str] = None,
+    ) -> Optional[datetime]:
         """Return the maximum ``timestamp`` value across stored rows.
 
         Args:
             device: If provided, only consider rows from this device.
+            session_system: If provided, only consider rows from this
+                parser/system (e.g. ``claude_code``, ``codex``,
+                ``openclaw``).  Scoping by both ``device`` and
+                ``session_system`` prevents a watermark set by one
+                parser from suppressing rows produced by another.
 
         Returns:
             The latest ``datetime`` found in storage, or ``None`` if
-            the store is empty (or has no rows for the given device).
+            the store is empty (or has no matching rows).
         """
         ...
