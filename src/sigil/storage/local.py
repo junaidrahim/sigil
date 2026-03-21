@@ -37,7 +37,11 @@ class LocalStorage(StorageBackend):
         df.write_parquet(root_dir=str(self.base_dir), write_mode="append")
         return len(chunk)
 
-    def max_timestamp(self, device: Optional[str] = None) -> Optional[datetime]:
+    def max_timestamp(
+        self,
+        device: Optional[str] = None,
+        session_system: Optional[str] = None,
+    ) -> Optional[datetime]:
         parquet_files = list(self.base_dir.rglob("*.parquet"))
         if not parquet_files:
             return None
@@ -45,6 +49,8 @@ class LocalStorage(StorageBackend):
         df = daft.read_parquet(str(self.base_dir))
         if device:
             df = df.where(daft.col("device") == device)
+        if session_system:
+            df = df.where(daft.col("session_system") == session_system)
         result = df.agg(daft.col("timestamp").max().alias("max_ts")).collect()
 
         raw = result.to_pydict()["max_ts"][0]

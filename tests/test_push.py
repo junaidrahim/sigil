@@ -1,6 +1,7 @@
 """Tests for push auto-detection and orchestration."""
 
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -102,3 +103,60 @@ class TestPushAll:
             assert len(codex_rows) == 2
             assert claude_rows[0].session_id == "cs1"
             assert codex_rows[0].session_id == "xs1"
+
+    def test_per_parser_watermarks(self):
+        """Per-parser watermarks only filter their own system's rows."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir) / "claude"
+            write_jsonl(
+                claude_dir / "proj" / "session.jsonl",
+                [
+                    {
+                        "type": "user",
+                        "message": {"role": "user", "content": "old"},
+                        "uuid": "u1",
+                        "timestamp": "2026-03-01T10:00:00Z",
+                        "sessionId": "cs1",
+                    },
+                    {
+                        "type": "user",
+                        "message": {"role": "user", "content": "new"},
+                        "uuid": "u2",
+                        "timestamp": "2026-03-10T10:00:00Z",
+                        "sessionId": "cs1",
+                    },
+                ],
+            )
+
+            codex_dir = Path(tmpdir) / "codex"
+            write_jsonl(
+                codex_dir / "2026" / "03" / "01" / "rollout.jsonl",
+                [
+                    {
+                        "timestamp": "2026-03-01T10:00:00Z",
+                        "type": "session_meta",
+                        "payload": {"id": "xs1", "cwd": "/tmp"},
+                    },
+                    {
+                        "timestamp": "2026-03-01T10:01:00Z",
+                        "type": "event_msg",
+                        "payload": {"type": "user_message", "message": "hi"},
+                    },
+                ],
+            )
+
+            sources = [("claude_code", claude_dir), ("codex", codex_dir)]
+
+            # Claude watermark at March 5 filters out the March 1 entry
+            # but codex has no watermark so all its rows come through
+            watermarks = {"claude_code": datetime(2026, 3, 5, 0, 0, 0, tzinfo=UTC)}
+            rows = list(push_all("test-mac", sources=sources, watermarks=watermarks))
+
+            claude_rows = [r for r in rows if r.session_system == "claude_code"]
+            codex_rows = [r for r in rows if r.session_system == "codex"]
+
+            # Only the March 10 claude row passes the watermark
+            assert len(claude_rows) == 1
+            assert claude_rows[0].message_text == "new"
+            # All codex rows pass (no watermark for codex)
+            assert len(codex_rows) == 2

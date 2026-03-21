@@ -3,7 +3,7 @@
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 from sigil.constants import CLAUDE_SESSIONS_DIR, CODEX_SESSIONS_DIR, OPENCLAW_SESSIONS_DIR
 from sigil.models import SessionRow
@@ -60,6 +60,7 @@ def push_all(
     device: str,
     sources: Optional[List[Tuple[str, Path]]] = None,
     watermark: Optional[datetime] = None,
+    watermarks: Optional[Dict[str, datetime]] = None,
 ) -> Iterator[SessionRow]:
     """Parse all detected session logs, yielding rows as they're parsed.
 
@@ -70,8 +71,11 @@ def push_all(
         device: Machine hostname to tag each row with.
         sources: Explicit list of ``(system_name, path)`` pairs. If
             ``None``, auto-detects from known locations.
-        watermark: If set, only rows with ``timestamp > watermark`` are
-            yielded. Used for incremental pushes.
+        watermark: Legacy single watermark applied to all parsers.
+            Ignored when ``watermarks`` is provided.
+        watermarks: Per-parser watermarks keyed by system name (e.g.
+            ``{"claude_code": <datetime>, "openclaw": <datetime>}``).
+            Takes precedence over ``watermark``.
 
     Yields:
         ``SessionRow`` instances streamed from all discovered session files.
@@ -87,11 +91,16 @@ def push_all(
             logger.warning("Unknown system %s, skipping %s", system, base_path)
             continue
 
+        # Per-parser watermark takes precedence over the legacy single value
+        effective_watermark = (
+            watermarks.get(system) if watermarks is not None else watermark
+        )
+
         files = discover_session_files(base_path)
         logger.info("Processing %d files from %s (%s)", len(files), system, base_path)
 
         for path in files:
             parser: SessionParser = parser_cls(
-                device=device, pushed_at=pushed_at, watermark=watermark
+                device=device, pushed_at=pushed_at, watermark=effective_watermark
             )
             yield from parser.parse_file(path)
