@@ -5,11 +5,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
-from sigil.constants import CLAUDE_SESSIONS_DIR, CODEX_SESSIONS_DIR
+from sigil.constants import CLAUDE_SESSIONS_DIR, CODEX_SESSIONS_DIR, OPENCLAW_SESSIONS_DIR
 from sigil.models import SessionRow
 from sigil.parsers.base import SessionParser
 from sigil.parsers.claude import ClaudeParser
 from sigil.parsers.codex import CodexParser
+from sigil.parsers.openclaw import OpenClawParser
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 _PARSERS = {
     "claude_code": ClaudeParser,
     "codex": CodexParser,
+    "openclaw": OpenClawParser,
 }
 
 
@@ -35,6 +37,8 @@ def auto_detect_sources() -> List[Tuple[str, Path]]:
         sources.append(("claude_code", CLAUDE_SESSIONS_DIR))
     if CODEX_SESSIONS_DIR.is_dir():
         sources.append(("codex", CODEX_SESSIONS_DIR))
+    if OPENCLAW_SESSIONS_DIR.is_dir():
+        sources.append(("openclaw", OPENCLAW_SESSIONS_DIR))
     return sources
 
 

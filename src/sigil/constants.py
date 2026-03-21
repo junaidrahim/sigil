@@ -10,6 +10,7 @@ ROWS_DIR = SIGIL_DIR / "rows"
 # Session log locations
 CLAUDE_SESSIONS_DIR = Path.home() / ".claude" / "projects"
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+OPENCLAW_SESSIONS_DIR = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
 
 # Storage
 DEFAULT_CHUNK_SIZE = 10_000

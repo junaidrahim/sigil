@@ -146,7 +146,7 @@ def push(device: Optional[str], full: bool) -> None:
     sources = auto_detect_sources()
     if not sources:
         console.print("[yellow]No session log directories found.[/]")
-        console.print("[dim]Looked for: ~/.claude/projects/, ~/.codex/sessions/[/]")
+        console.print("[dim]Looked for: ~/.claude/projects/, ~/.codex/sessions/, ~/.openclaw/agents/main/sessions/[/]")
         return
 
     for system, path in sources:
